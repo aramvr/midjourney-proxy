@@ -79,11 +79,15 @@ namespace Midjourney.Captcha.API
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            _logger.LogInformation("正在下载浏览器...");
+            // 配置了 sitekey 时不需要浏览器
+            if (string.IsNullOrWhiteSpace(_captchaOption.SiteKey))
+            {
+                _logger.LogInformation("正在下载浏览器...");
 
-            await CloudflareHelper.DownloadBrowser();
+                await CloudflareHelper.DownloadBrowser();
 
-            _logger.LogInformation("浏览器下载完成");
+                _logger.LogInformation("浏览器下载完成");
+            }
 
             _logger.LogInformation("自动验证服务运行中...");
 
