@@ -58,6 +58,83 @@ namespace Midjourney.Captcha.API
         }
 
         /// <summary>
+        /// 验证页的接口根地址，例如 https://editor.midjourney.com/captcha/
+        /// </summary>
+        /// <param name="url">验证页地址</param>
+        /// <returns></returns>
+        private static string ChallengeBaseUrl(string url)
+        {
+            var path = url.Split('?')[0];
+            var index = path.LastIndexOf("challenge/", StringComparison.OrdinalIgnoreCase);
+
+            return index > 0 ? path.Substring(0, index) : "https://editor.midjourney.com/captcha/";
+        }
+
+        /// <summary>
+        /// 登记本次验证，返回 custom_id（提交验证码时使用），失败返回 null
+        /// </summary>
+        /// <param name="url">验证页地址，包含 hash、token 参数</param>
+        /// <returns></returns>
+        private static async Task<string> RegisterChallengeAsync(string url)
+        {
+            try
+            {
+                var query = new Uri(url).Query.TrimStart('?')
+                    .Split('&', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(c => c.Split('=', 2))
+                    .Where(c => c.Length == 2)
+                    .ToDictionary(c => c[0], c => Uri.UnescapeDataString(c[1]));
+
+                query.TryGetValue("hash", out var hash);
+                query.TryGetValue("token", out var token);
+
+                if (string.IsNullOrWhiteSpace(hash) || string.IsNullOrWhiteSpace(token))
+                {
+                    Log.Warning("CF 验证链接缺少 hash/token {@0}", url);
+                    return null;
+                }
+
+                var baseUrl = ChallengeBaseUrl(url);
+                var client = new RestClient(new RestClientOptions()
+                {
+                    Timeout = TimeSpan.FromMinutes(1),
+                    UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+                });
+
+                var ackRes = await client.ExecuteAsync(new RestRequest($"{baseUrl}api/c/@me/ack/{token}", Method.Post));
+                if (ackRes.StatusCode != System.Net.HttpStatusCode.OK)
+                {
+                    Log.Error("CF 验证登记失败 {@0}, {@1}, {@2}", url, ackRes.StatusCode, ackRes.Content);
+                    return null;
+                }
+
+                var customId = JsonConvert.DeserializeObject<JObject>(ackRes.Content)?["custom_id"]?.ToString();
+                if (string.IsNullOrWhiteSpace(customId))
+                {
+                    Log.Error("CF 验证登记未返回 custom_id {@0}, {@1}", url, ackRes.Content);
+                    return null;
+                }
+
+                var hashRes = await client.ExecuteAsync(new RestRequest($"{baseUrl}api/c/{customId}/ack?hash={hash}", Method.Post));
+                if (hashRes.StatusCode != System.Net.HttpStatusCode.NoContent)
+                {
+                    // 204 表示验证页已就绪，其他状态说明链接已失效
+                    Log.Error("CF 验证登记 hash 失败 {@0}, {@1}, {@2}", url, hashRes.StatusCode, hashRes.Content);
+                    return null;
+                }
+
+                Log.Information("CF 验证登记成功 {@0}", customId);
+
+                return customId;
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "CF 验证登记异常 {@0}", url);
+                return null;
+            }
+        }
+
+        /// <summary>
         /// 打开验证页，从 Cloudflare 请求中抓取 sitekey，未抓取到返回 null
         /// </summary>
         /// <param name="captchaOption"></param>
@@ -182,6 +259,16 @@ namespace Midjourney.Captcha.API
                     {
                         return false;
                     }
+                }
+
+                // MJ 验证页在渲染 Turnstile 之前会先登记本次验证：
+                // POST {base}/api/c/@me/ack/{token} -> { custom_id }
+                // POST {base}/api/c/{custom_id}/ack?hash={hash} -> 204
+                // 跳过这两步时，最后的 submit 会返回 404，验证不会生效。
+                var customId = await RegisterChallengeAsync(url);
+                if (string.IsNullOrWhiteSpace(customId))
+                {
+                    return false;
                 }
 
                 var token = string.Empty;
@@ -389,7 +476,7 @@ namespace Midjourney.Captcha.API
                     return false;
                 }
 
-                var submitUrl = $"https://editor.midjourney.com/captcha/api/c/{hash}/submit";
+                var submitUrl = $"{ChallengeBaseUrl(url)}api/c/{customId}/submit";
                 // https://editor.midjourney.com/captcha/api/c/fopSUuR6brCzgJuFJVmV6Tzn5QaW4Z6yCTbktDzNoZai-3iIlWTsG3E8lywCV4xpxsjS50qVcFDlK6sb/submit
 
                 try
