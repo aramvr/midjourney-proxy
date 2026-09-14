@@ -76,7 +76,13 @@ namespace Midjourney.Captcha.API
                 // 启动浏览器
                 browser = await Puppeteer.LaunchAsync(new LaunchOptions
                 {
-                    Headless = captchaOption.Headless // 设置无头模式
+                    Headless = captchaOption.Headless, // 设置无头模式
+
+                    // Linux 容器（Docker）中 Chromium 沙箱不可用，需禁用沙箱，
+                    // 并使用 /tmp 代替较小的 /dev/shm，否则浏览器无法启动
+                    Args = OperatingSystem.IsWindows()
+                        ? Array.Empty<string>()
+                        : new[] { "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage" }
                 });
 
                 //// 创建无痕浏览器上下文
