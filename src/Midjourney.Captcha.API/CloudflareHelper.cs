@@ -58,13 +58,12 @@ namespace Midjourney.Captcha.API
         }
 
         /// <summary>
-        /// 验证 URL 模拟人机验证
+        /// 打开验证页，从 Cloudflare 请求中抓取 sitekey，未抓取到返回 null
         /// </summary>
         /// <param name="captchaOption"></param>
-        /// <param name="hash"></param>
         /// <param name="url"></param>
         /// <returns></returns>
-        public static async Task<bool> Validate(CaptchaOption captchaOption, string hash, string url)
+        private static async Task<string> FetchSiteKeyAsync(CaptchaOption captchaOption, string url)
         {
             IBrowser browser = null;
             IPage page = null;
@@ -84,12 +83,6 @@ namespace Midjourney.Captcha.API
                         ? Array.Empty<string>()
                         : new[] { "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage" }
                 });
-
-                //// 创建无痕浏览器上下文
-                //var context = await browser.CreateBrowserContextAsync();
-
-                //// 创建一个新的页面
-                //page = await context.NewPageAsync();
 
                 page = await browser.NewPageAsync();
 
@@ -121,37 +114,74 @@ namespace Midjourney.Captcha.API
                 // 等待
                 await Task.Delay(6000);
 
-                // 日志
-                Log.Information("CF 开始验证 URL: {@0}", url);
-
                 var siteKeyCount = 0;
-                var siteKey = string.Empty;
                 do
                 {
                     if (siteKeyCount > 20)
                     {
                         // 超时没有获取到 sitekey
-                        return false;
+                        Log.Warning("CF 未获取到 SiteKey {@0}", url);
+                        return null;
                     }
 
                     // 获取 Cloudflare 验证页面的 src
                     var src = urls.FirstOrDefault(c => c.StartsWith("https://challenges.cloudflare.com/cdn-cgi/challenge-platform"));
-                    siteKey = src?.Split("/").Where(c => c.StartsWith("0x") && c.Length > 20).FirstOrDefault();
+                    var siteKey = src?.Split("/").Where(c => c.StartsWith("0x") && c.Length > 20).FirstOrDefault();
 
                     if (!string.IsNullOrWhiteSpace(siteKey))
                     {
-                        break;
+                        // 日志
+                        Log.Information("CF 验证 SiteKey: {@0}", siteKey);
+
+                        return siteKey;
                     }
 
                     siteKeyCount++;
                     await Task.Delay(1000);
                 } while (true);
-
-                // 日志
-                Log.Information("CF 验证 SiteKey: {@0}", siteKey);
-                if (string.IsNullOrWhiteSpace(siteKey))
+            }
+            finally
+            {
+                if (page != null)
                 {
-                    return false;
+                    await page.CloseAsync();
+                }
+
+                if (browser != null)
+                {
+                    await browser.CloseAsync();
+                }
+            }
+        }
+
+        /// <summary>
+        /// 验证 URL 模拟人机验证
+        /// </summary>
+        /// <param name="captchaOption"></param>
+        /// <param name="hash"></param>
+        /// <param name="url"></param>
+        /// <returns></returns>
+        public static async Task<bool> Validate(CaptchaOption captchaOption, string hash, string url)
+        {
+            try
+            {
+                // 日志
+                Log.Information("CF 开始验证 URL: {@0}", url);
+
+                // MJ 验证页始终使用同一个 Turnstile sitekey，配置了 sitekey 时无需启动浏览器抓取。
+                // MJ 页面资源变更后（例如 2026-09 起验证页脚本 404），浏览器抓取不到 sitekey，验证必然失败。
+                var siteKey = captchaOption.SiteKey?.Trim();
+                if (!string.IsNullOrWhiteSpace(siteKey))
+                {
+                    Log.Information("CF 验证 SiteKey（配置）: {@0}", siteKey);
+                }
+                else
+                {
+                    siteKey = await FetchSiteKeyAsync(captchaOption, url);
+                    if (string.IsNullOrWhiteSpace(siteKey))
+                    {
+                        return false;
+                    }
                 }
 
                 var token = string.Empty;
@@ -512,12 +542,6 @@ namespace Midjourney.Captcha.API
             catch (Exception ex)
             {
                 Log.Error(ex, "CF 验证 URL 异常 {@0}", url);
-            }
-            finally
-            {
-                // 关闭浏览器
-                await page?.CloseAsync();
-                await browser?.CloseAsync();
             }
 
             return false;

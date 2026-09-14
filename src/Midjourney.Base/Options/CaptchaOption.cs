@@ -53,5 +53,11 @@ namespace Midjourney.Base.Options
         /// 是否开启登录验证服务（默认开启）
         /// </summary>
         public bool IsLoginService { get; set; } = true;
+
+        /// <summary>
+        /// MJ 验证页的 Turnstile sitekey，配置后直接使用，无需启动浏览器抓取。
+        /// 置空则回退到浏览器抓取。
+        /// </summary>
+        public string SiteKey { get; set; } = "0x4AAAAAAAat3Zn0na9wnvrt";
     }
 }
